@@ -1,6 +1,6 @@
 # Podcast Daily Digest
 
-A daily email summarising new episodes from a list of podcasts. Every morning it checks each show's feed, and for anything published in the last 48 hours that it hasn't already covered, it downloads the audio, has Gemini listen to it and write a structured summary (takeaway, why it matters, key points, quotes), and emails one digest. On days with nothing new it sends a short "nothing new" note listing when each show last published — so a silent failure never looks like a quiet day.
+A daily email summarising new episodes from a list of podcasts. Every morning it checks each show's feed, and for anything published in the last 48 hours that it hasn't already covered, it downloads the audio, has Gemini listen to it and write a hard-hitting brief — a LISTEN/SKIM/SKIP verdict on whether the audio deserves your time, a one-line takeaway, key points and quotes — and emails one digest, strongest episode first, opening with an "At a glance" triage block and (on 3+ episode days) a "throughline" connecting the day. On days with nothing new it sends a short "nothing new" note listing when each show last published — so a silent failure never looks like a quiet day.
 
 Built from the podcast engine in `You-Tube-Year-Digest` (`podcast_year.py`): same iTunes lookup, same Gemini audio call, same episode-card styling.
 

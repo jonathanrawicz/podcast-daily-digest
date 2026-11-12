@@ -77,11 +77,20 @@ def main():
     check("parse_duration '3825'", pd.parse_duration("3825") == 3825)
     check("format_duration 6000 -> 1h 40m", pd.format_duration(6000) == "1h 40m")
     check("ago yesterday", pd.ago(now - timedelta(days=1)) == "yesterday")
-    sp, body = pd.extract_speaker("SPEAKER: Jensen Huang\n\n## Summary\nBody")
-    check("extract_speaker name", sp == "Jensen Huang")
-    check("extract_speaker strips line", body.startswith("## Summary"))
-    sp2, _ = pd.extract_speaker("## Summary\nNo speaker line")
-    check("extract_speaker missing -> Unknown", sp2 == "Unknown")
+    fields, body = pd.extract_header(
+        "SPEAKER: Jensen Huang\nSIGNAL: 5\nVERDICT: LISTEN — a great exchange\n"
+        "GLANCE: One punchy line.\n\n## The Takeaway\nBody")
+    check("header speaker", fields["speaker"] == "Jensen Huang")
+    check("header signal", fields["signal"] == 5)
+    check("header verdict + reason",
+          fields["verdict"] == "LISTEN" and "great exchange" in fields["verdict_reason"])
+    check("header glance", fields["glance"] == "One punchy line.")
+    check("header lines stripped from body", body.startswith("## The Takeaway"))
+    f2, _ = pd.extract_header("## Summary\nNo header lines")
+    check("missing headers -> safe defaults",
+          f2["speaker"] == "Unknown" and f2["verdict"] == "SKIM" and f2["signal"] == 3)
+    tk, rest = pd.split_takeaway("## The Takeaway\nClaim.\n\n## Key Points\n- x")
+    check("split_takeaway", tk == "Claim." and rest.startswith("## Key Points"))
 
     shows = pd.read_podcasts()
     check("podcasts.csv reads 5 shows", len(shows) == 5)
@@ -149,10 +158,17 @@ def main():
     def fake_summarize(audio_path, model, show, title):
         if "fail" in title:
             raise RuntimeError("simulated Gemini outage")
-        return (f"SPEAKER: Guest Of {show}\n\n## Summary\nMain claim of {title}.\n\n"
-                f"## Why It Matters\nContext.\n\n## Key Points\n- Point with number 42\n"
-                f"- Second point\n\n## Worth Quoting\n- \"A memorable quote.\"")
+        listen = "Show A" in show
+        return (f"SPEAKER: Guest Of {show}\n"
+                f"SIGNAL: {5 if listen else 3}\n"
+                f"VERDICT: {'LISTEN — the audio beats the brief' if listen else 'SKIM — the points below carry it'}\n"
+                f"GLANCE: Main claim of {title} in one line.\n\n"
+                f"## The Takeaway\nMain claim of {title}. Stated hard.\n\n"
+                f"## Key Points\n- **Lead:** point with number 42\n- **Second:** another point\n\n"
+                f"## Worth Quoting\n- \"A memorable quote.\"")
     pd.summarize_audio = fake_summarize
+    pd.generate_throughline = lambda model, summaries: \
+        "Fake throughline connecting the day's episodes."
 
     sent = []
     pd.send_email = lambda html, text, subject: sent.append(
@@ -189,6 +205,16 @@ def main():
     check("show name override used", "Show B override" in sent[0]["html"])
     check("duration rendered", "1h 40m" in sent[0]["html"])
     check("digest html written", any(pd.OUTPUT_DIR.glob("digest_*.html")))
+    check("verdict chips rendered",
+          ">LISTEN<" in sent[0]["html"] and ">SKIM<" in sent[0]["html"])
+    check("LISTEN episode ordered first",
+          sent[0]["html"].find("A: brand new") < sent[0]["html"].find("B: new 1"))
+    check("glance line in at-a-glance", "in one line." in sent[0]["html"])
+    check("takeaway restyled as lead",
+          "font-weight:600" in sent[0]["html"] and "Stated hard." in sent[0]["html"])
+    check("no throughline under 3 episodes",
+          "throughline" not in sent[0]["html"].lower())
+    check("headphones count in header", "worth your headphones" in sent[0]["html"])
 
     # ---------- run 2: nothing new -> quiet note ----------
     print("\n== Pipeline run 2: nothing new ==")
@@ -222,9 +248,11 @@ def main():
          "published": now - timedelta(hours=i)} for i in range(1, 7)])
     pd.main()
     # Each episode title appears once in the plain-text body (the HTML also
-    # repeats it in the contents box, so count in text).
+    # repeats it in the at-a-glance box, so count in text).
     n_a = sent[0]["text"].count("Show A — A: burst")
     check("per-show cap holds (3 of 6)", n_a == 3)
+    check("throughline shown on 3+ day",
+          "Fake throughline" in sent[0]["html"])
     seen = json.loads(pd.SEEN_PATH.read_text())
     check("capped episodes not marked seen",
           sum(1 for g in seen if g.startswith("a-burst")) == 3)

@@ -78,39 +78,37 @@ OUTPUT_DIR = Path("output")
 HTTP_HEADERS = {"User-Agent": "podcast_daily.py/1.0 (+personal daily digest)"}
 
 
-SUMMARY_PROMPT = """You are summarizing a podcast episode for someone who follows the topic closely and has limited time. They don't need explained what's already obvious — they need the substance: specific claims, numbers, named people and companies, contrarian takes, and direct quotes worth seeing.
+SUMMARY_PROMPT = """You are writing a daily intelligence brief from podcast episodes for a time-poor professional investor. Your job is triage and distillation: what was claimed, why it matters, and whether the audio deserves their time. Write like a sharp morning note: declarative, specific, hard-hitting. No hedging ("seems", "suggests", "arguably"), no filler, and never describe what the episode "is about" — state what it claims.
 
-Listen to the audio I'm providing. Begin your response with EXACTLY this format on the first line, before anything else:
+Listen to the audio I'm providing. Begin your response with EXACTLY these four lines, in this order, before anything else:
 SPEAKER: <name>
+SIGNAL: <1-5>
+VERDICT: <LISTEN or SKIM or SKIP> — <blunt reason, max 20 words>
+GLANCE: <the episode's single takeaway as one punchy line, max 25 words>
 
-Where <name> is the primary speaker or guest in the episode. Rules:
-- For an interview, use the guest's full name (e.g., "Donald Hoffman"). The host conducting the interview is NOT the speaker.
-- If two people share the spotlight roughly equally, list both joined by " & ". Never list more than two.
-- If it's a solo monologue by the host with no guest, write "Host".
-- If you genuinely cannot tell from the audio, write "Unknown".
-- Do not include titles (Dr., Prof., Mr., etc.).
+Rules for the header lines:
+- SPEAKER: the primary speaker or guest. Interview → the guest's full name (the host is NOT the speaker). Two roughly equal voices → both joined by " & " (never more than two). Solo host monologue → "Host". Can't tell → "Unknown". No titles (Dr., Prof.).
+- SIGNAL: how much substance the episode carries. 5 = dense, novel, specific; 1 = padding and PR. Most episodes are 2-4. Be honest.
+- VERDICT: LISTEN only when the audio itself beats reading this brief (a great exchange, nuance that won't compress). SKIM when the brief carries most of it. SKIP when the brief fully covers it. The reason names what they'd gain (or not) from the audio — with a rough timestamp if one moment stands out.
+- GLANCE: a claim, not a topic. "Models are commodities; distribution is the moat" — never "A discussion of AI strategy".
 
-Then leave one blank line, then the summary in this exact structure with these exact headings:
+Then one blank line, then the body in this exact structure with these exact headings:
 
-## Summary
-One or two sentences capturing the single most important takeaway. Not a description of what the episode is about — the actual conclusion or claim. If the reader reads nothing else, this is what they should walk away with.
-
-## Why It Matters
-One short paragraph (2-4 sentences) explaining the implications, stakes, or context. Why should they care about this specific episode right now?
+## The Takeaway
+2-3 sentences. The strongest claim first, stated plainly as what was argued. Numbers, names and dates up front. If the reader reads nothing else, this is what they walk away with.
 
 ## Key Points
-4-7 bullets, each capturing one distinct claim, finding, or argument. Each bullet must include something specific — a number, a name, a date, a comparison, a mechanism. Lead with the most consequential point. No generic statements.
+4-7 bullets. Each starts with a bolded 2-5 word lead (e.g. "**The gap is closing:**"), then one specific claim carrying a number, name, date, comparison or mechanism. Lead with the most consequential. Where the speaker hedged, contradicted themselves or pulled back, say so — that is signal.
 
 ## Worth Quoting
-2-4 direct quotes (15-30 words each) that capture the speaker's actual voice, surprising claims, or memorable framings. Use quotation marks. If the audio is dry and has no quote-worthy moments, write "Nothing notable enough to quote." rather than padding.
+1-2 direct quotes (15-30 words each) that carry the speaker's actual voice or a surprising claim, in quotation marks. If nothing earns it, write exactly: Nothing notable enough to quote.
 
 Critical rules:
-- DO NOT pad with generic business-speak or filler ("It's important to note that...", "Many experts agree...").
+- DO NOT pad, soften, or balance for its own sake. Short and sharp beats complete.
 - DO NOT summarize sponsor reads, advertising breaks, or sign-offs.
 - DO NOT extrapolate beyond what's in the audio or invent details.
 - DO use the speaker's own framing and terminology, not corporate generic language.
-- DO note contradictions, hedges, or moments where the speaker pulled back from a claim.
-- DO be willing to say an episode is unremarkable if it is.
+- DO say plainly when an episode is weak — a low SIGNAL and a SKIP verdict are useful answers.
 """
 
 
@@ -407,24 +405,91 @@ def _safe_delete(audio_file):
         print(f"  warning: failed to delete uploaded file: {e}", file=sys.stderr)
 
 
-# ---------- Speaker extraction ----------
+# ---------- Header extraction (SPEAKER / SIGNAL / VERDICT / GLANCE) ----------
 
 SPEAKER_RE = re.compile(r"^\s*SPEAKER:\s*(.+?)\s*$", re.MULTILINE)
+SIGNAL_RE = re.compile(r"^\s*SIGNAL:\s*([1-5])\s*(?:/\s*5)?\s*$", re.MULTILINE)
+VERDICT_RE = re.compile(
+    r"^\s*VERDICT:\s*(LISTEN|SKIM|SKIP)\s*(?:[—–:-]+\s*(.*?))?\s*$",
+    re.MULTILINE | re.IGNORECASE)
+GLANCE_RE = re.compile(r"^\s*GLANCE:\s*(.+?)\s*$", re.MULTILINE)
+
+VERDICT_RANK = {"LISTEN": 0, "SKIM": 1, "SKIP": 2}
+# chip/border colour, verdict-strip background, verdict-strip text colour
+VERDICT_STYLES = {
+    "LISTEN": ("#0a7d33", "#f2faf5", "#0a5c28"),
+    "SKIM": ("#b57d00", "#fdf8ee", "#7a5600"),
+    "SKIP": ("#8a8a8a", "#f5f5f5", "#555555"),
+}
 
 
-def extract_speaker(summary_text):
-    """Pull the SPEAKER: line off the top. Returns (speaker, cleaned_summary)."""
+def extract_header(summary_text):
+    """Parse the four header lines off the top of Gemini's response.
+
+    Returns (fields, cleaned_body). Missing lines get safe defaults so a
+    partially-conforming response still renders.
+    """
+    fields = {"speaker": "Unknown", "signal": 3,
+              "verdict": "SKIM", "verdict_reason": "", "glance": ""}
     if not summary_text:
-        return "Unknown", summary_text
-    head = summary_text[:300]
+        return fields, summary_text or ""
+    head = summary_text[:800]
+    body = summary_text
+
     m = SPEAKER_RE.search(head)
+    if m:
+        speaker = m.group(1).strip()
+        if speaker and speaker.lower() not in ("n/a", "none"):
+            fields["speaker"] = speaker
+        body = SPEAKER_RE.sub("", body, count=1)
+    m = SIGNAL_RE.search(head)
+    if m:
+        fields["signal"] = int(m.group(1))
+        body = SIGNAL_RE.sub("", body, count=1)
+    m = VERDICT_RE.search(head)
+    if m:
+        fields["verdict"] = m.group(1).upper()
+        fields["verdict_reason"] = (m.group(2) or "").strip()
+        body = VERDICT_RE.sub("", body, count=1)
+    m = GLANCE_RE.search(head)
+    if m:
+        fields["glance"] = m.group(1).strip()
+        body = GLANCE_RE.sub("", body, count=1)
+    return fields, body.lstrip()
+
+
+def split_takeaway(body_md):
+    """Split '## The Takeaway' off the body. Returns (takeaway_md or None, rest_md)."""
+    m = re.search(r"##\s*The Takeaway\s*\n(.*?)(?=\n##\s|\Z)",
+                  body_md, re.DOTALL | re.IGNORECASE)
     if not m:
-        return "Unknown", summary_text
-    speaker = m.group(1).strip()
-    if not speaker or speaker.lower() in ("n/a", "none", ""):
-        speaker = "Unknown"
-    cleaned = SPEAKER_RE.sub("", summary_text, count=1).lstrip()
-    return speaker, cleaned
+        return None, body_md
+    takeaway = m.group(1).strip()
+    rest = (body_md[:m.start()] + body_md[m.end():]).strip()
+    return takeaway, rest
+
+
+# ---------- Throughline (one cheap text-only call on multi-episode days) ----------
+
+THROUGHLINE_PROMPT = """Below are briefs of today's new podcast episodes. Write "the throughline": 2-3 sentences connecting them into one sharp observation — what today's conversations collectively say, where they agree or collide. Declarative and hard-hitting: no hedging, no preamble, no bullet points, no heading. Refer to speakers by surname. If the episodes genuinely don't connect, say in the same register what stands out most instead. Return ONLY the sentences."""
+
+
+def generate_throughline(model, summaries):
+    """Connect the day's episodes in 2-3 sentences. Returns None on any failure."""
+    parts = []
+    for s in summaries:
+        parts.append(f"— {s['show']} (speaker: {s['speaker']}): {s.get('glance', '')}\n"
+                     f"{s['summary'][:1200]}")
+    try:
+        resp = model.generate_content(THROUGHLINE_PROMPT + "\n\n" + "\n\n".join(parts))
+        text = (resp.text or "").strip()
+        # Guard against chatty preamble leaking into the email.
+        if not text or text.lower().startswith(("here", "sure", "okay", "certainly")):
+            return None
+        return text[:700]
+    except Exception as e:
+        print(f"  throughline failed (skipping): {e}", file=sys.stderr)
+        return None
 
 
 # ---------- HTML styling (same look as the year-in-review tool) ----------
@@ -505,57 +570,97 @@ def _header_block(subtitle_bits):
     )
 
 
-def build_digest(summaries, shows_checked, lookback_hours, feed_errors, deferred):
-    """HTML + plain-text digest for a day WITH new episodes."""
+def build_digest(summaries, shows_checked, lookback_hours, feed_errors, deferred,
+                 throughline=None):
+    """HTML + plain-text digest: throughline, at-a-glance triage, strongest first."""
+    # Strongest first: LISTEN > SKIM > SKIP, then signal, then recency.
+    summaries = sorted(summaries, key=lambda s: (
+        VERDICT_RANK.get(s.get("verdict", "SKIM"), 1),
+        -int(s.get("signal", 3)),
+        -s["published"].timestamp(),
+    ))
+
     show_names = []
     for s in summaries:
         if s["show"] not in show_names:
             show_names.append(s["show"])
-
     n = len(summaries)
-    html_parts = [_page_open("Podcast Daily")]
-    html_parts.append(_header_block([
-        f"<strong>{n}</strong> new episode{'s' if n != 1 else ''}",
-        f"{shows_checked} shows checked",
-        f"last {lookback_hours}h",
-    ]))
+    listens = sum(1 for s in summaries if s.get("verdict") == "LISTEN")
+
+    subtitle = [f"<strong>{n}</strong> new episode{'s' if n != 1 else ''}"]
+    if listens:
+        subtitle.append(f"<strong>{listens}</strong> worth your headphones")
+    subtitle += [f"{shows_checked} shows checked", f"last {lookback_hours}h"]
+    html_parts = [_page_open("Podcast Daily"), _header_block(subtitle)]
+
+    text_parts = [
+        f"Podcast Daily — {now_utc().strftime('%A %-d %B %Y')}",
+        f"{n} new episode(s)"
+        + (f" · {listens} worth a listen" if listens else "")
+        + f" · {shows_checked} shows checked · last {lookback_hours}h",
+        "",
+    ]
 
     for i, s in enumerate(summaries, 1):
         s["_anchor"] = f"e{i}"
 
-    # Contents box when there's more than one episode
+    # The throughline — one sharp observation connecting the day
+    if throughline:
+        html_parts.append(
+            "<div style='border-left:4px solid #111;background:#fff;"
+            "padding:16px 20px;margin-bottom:22px;'>"
+            "<div style='font-size:11px;font-weight:700;text-transform:uppercase;"
+            "letter-spacing:1px;color:#888;margin-bottom:6px;'>The throughline</div>"
+            f"<p style='margin:0;font-size:16px;font-weight:600;color:#111;"
+            f"line-height:1.5;'>{esc(throughline)}</p></div>"
+        )
+        text_parts += ["THE THROUGHLINE", throughline, ""]
+
+    # At a glance — verdict chip + one-line takeaway per episode
     if n > 1:
         html_parts.append(
             "<div style='background:#fff;border:1px solid #e5e5e5;border-radius:8px;"
-            "padding:18px 24px;margin-bottom:28px;'>"
+            "padding:18px 22px;margin-bottom:26px;'>"
             "<div style='font-size:11px;font-weight:700;text-transform:uppercase;"
-            "letter-spacing:1px;color:#888;margin-bottom:10px;'>In this digest</div>"
-            "<ul style='margin:0;padding-left:18px;'>"
+            "letter-spacing:1px;color:#888;margin-bottom:12px;'>"
+            "At a glance — strongest first</div>"
         )
-        for s in summaries:
+        for idx, s in enumerate(summaries):
+            verdict = s.get("verdict", "SKIM")
+            chip_color = VERDICT_STYLES.get(verdict, VERDICT_STYLES["SKIM"])[0]
             dur = format_duration(s.get("duration_seconds"))
+            glance = s.get("glance") or s["title"]
+            speaker_bit = (" · " + esc(s["speaker"])
+                           if s["speaker"] not in ("Unknown", "Host") else "")
+            border = "border-bottom:1px solid #f0f0f0;" if idx < n - 1 else ""
             html_parts.append(
-                f"<li style='margin-bottom:5px;font-size:14px;'>"
-                f"<span style='font-weight:700;color:#111;'>{esc(s['show'])}</span> — "
-                f"<a href='#{s['_anchor']}' style='color:#0066cc;text-decoration:none;'>"
-                f"{esc(s['title'])}</a>"
-                f"<span style='color:#999;font-size:12px;'>"
-                f"{(' · ' + dur) if dur else ''}</span></li>"
+                f"<div style='display:block;padding:9px 0;{border}'>"
+                f"<span style='display:inline-block;background:{chip_color};color:#fff;"
+                f"font-size:10.5px;font-weight:800;letter-spacing:0.8px;padding:3px 9px;"
+                f"border-radius:9px;vertical-align:middle;'>{esc(verdict)}</span>"
+                f"<span style='font-weight:700;color:#111;font-size:14px;'>"
+                f"&nbsp;{esc(s['show'])}{speaker_bit}</span>"
+                f"<span style='color:#999;font-size:12px;'>{(' · ' + dur) if dur else ''}</span>"
+                f"<div style='font-size:14px;color:#333;margin-top:3px;'>"
+                f"<a href='#{s['_anchor']}' style='color:#333;text-decoration:none;'>"
+                f"{esc(glance)}</a></div></div>"
             )
-        html_parts.append("</ul></div>")
+        html_parts.append("</div>")
+        text_parts.append("AT A GLANCE — STRONGEST FIRST")
+        for s in summaries:
+            text_parts.append(f"  [{s.get('verdict', 'SKIM')}] {s['show']}: "
+                              f"{s.get('glance') or s['title']}")
+        text_parts.append("")
 
-    text_parts = [
-        f"Podcast Daily — {now_utc().strftime('%A %-d %B %Y')}",
-        f"{n} new episode(s) · {shows_checked} shows checked · last {lookback_hours}h",
-        "",
-    ]
-
+    # Episode cards, strongest first
     for s in summaries:
-        date_str = s["published"].strftime("%-d %b, %H:%M UTC")
+        date_str = s["published"].strftime("%-d %b")
         dur = format_duration(s.get("duration_seconds"))
         ep_link = s.get("episode_url") or s.get("audio_url")
+        verdict = s.get("verdict", "SKIM")
+        chip, strip_bg, strip_fg = VERDICT_STYLES.get(verdict, VERDICT_STYLES["SKIM"])
         speaker_chip = ""
-        if s["speaker"] not in ("Unknown", "Host"):
+        if s["speaker"] != "Unknown":
             speaker_chip = (
                 f"<span style='background:#eef4ff;padding:2px 8px;border-radius:10px;"
                 f"color:#0050b3;font-weight:600;margin-right:8px;'>{esc(s['speaker'])}</span>"
@@ -563,28 +668,46 @@ def build_digest(summaries, shows_checked, lookback_hours, feed_errors, deferred
         html_parts.append(
             f"<div id='{s['_anchor']}' style='background:#fff;border:1px solid #e5e5e5;"
             f"border-radius:8px;padding:24px;margin-bottom:16px;'>"
-            f"<div style='font-size:12px;color:#888;margin-bottom:6px;'>"
+            f"<div style='font-size:12px;color:#888;margin-bottom:8px;'>"
             f"<span style='background:#111;color:#fff;padding:2px 10px;border-radius:10px;"
             f"font-weight:700;letter-spacing:0.3px;margin-right:8px;'>{esc(s['show'])}</span>"
             f"{speaker_chip}"
             f"{esc(date_str)}{(' · ' + dur) if dur else ''}</div>"
-            f"<h3 style='font-size:20px;font-weight:700;margin:0 0 6px;color:#111;"
-            f"line-height:1.3;'>{esc(s['title'])}</h3>"
-            f"<p style='margin:0 0 20px;font-size:14px;'>"
+            f"<h3 style='font-size:21px;font-weight:800;margin:0 0 10px;color:#111;"
+            f"line-height:1.25;'>{esc(s['title'])}</h3>"
+            f"<div style='border-left:4px solid {chip};background:{strip_bg};"
+            f"padding:10px 16px;margin:0 0 16px;font-size:14px;color:{strip_fg};'>"
+            f"<strong>{esc(verdict)}.</strong> {esc(s.get('verdict_reason', ''))}</div>"
+        )
+
+        takeaway_md, rest_md = split_takeaway(s["summary"])
+        if takeaway_md:
+            tk_html = markdown.markdown(takeaway_md, extensions=["extra"])
+            tk_html = tk_html.replace(
+                "<p>",
+                "<p style='margin:0 0 16px;font-size:16px;font-weight:600;"
+                "color:#111;line-height:1.5;'>")
+            html_parts.append(tk_html)
+            body_src = rest_md
+        else:
+            body_src = s["summary"]
+        body_html = markdown.markdown(body_src, extensions=["extra", "nl2br"])
+        body_html = style_summary_html(body_html)
+        html_parts.append(f"<div>{body_html}</div>")
+        html_parts.append(
+            f"<p style='margin:14px 0 0;font-size:14px;'>"
             f"<a href='{esc(ep_link)}' style='color:#0066cc;text-decoration:none;'>"
             f"♪ Listen to episode</a>"
             f"<a href='#top' style='color:#999;text-decoration:none;float:right;"
-            f"font-size:13px;'>↑ back to top</a></p>"
+            f"font-size:13px;'>↑ top</a></p></div>"
         )
-        body_html = markdown.markdown(s["summary"], extensions=["extra", "nl2br"])
-        body_html = style_summary_html(body_html)
-        html_parts.append(f"<div>{body_html}</div></div>")
 
         text_parts += [
             "-" * 60,
             f"{s['show']} — {s['title']}",
             f"{date_str}{(' · ' + dur) if dur else ''}"
-            + (f" · {s['speaker']}" if s['speaker'] not in ('Unknown',) else ""),
+            + (f" · {s['speaker']}" if s['speaker'] != 'Unknown' else ""),
+            verdict + (f" — {s['verdict_reason']}" if s.get("verdict_reason") else ""),
             ep_link or "",
             "-" * 60,
             s["summary"],
@@ -769,9 +892,10 @@ def main():
             with tempfile.TemporaryDirectory() as tmp:
                 audio_path = download_episode(ep["audio_url"], tmp)
                 raw = summarize_audio(audio_path, model, ep["show"], ep["title"])
-            speaker, summary = extract_speaker(raw)
-            print(f"    speaker: {speaker}")
-            summaries.append({**ep, "summary": summary, "speaker": speaker})
+            fields, body = extract_header(raw)
+            print(f"    speaker: {fields['speaker']} · signal {fields['signal']} "
+                  f"· {fields['verdict']}")
+            summaries.append({**ep, "summary": body, **fields})
         except Exception as e:
             # Not marked seen -> retried tomorrow while still inside the window.
             print(f"    failed, will retry tomorrow: {e}", file=sys.stderr)
@@ -779,8 +903,10 @@ def main():
                                f"will retry tomorrow ({type(e).__name__})")
 
     if summaries:
+        throughline = (generate_throughline(model, summaries)
+                       if len(summaries) >= 3 else None)
         html, text, subject = build_digest(
-            summaries, len(shows), LOOKBACK_HOURS, feed_errors, deferred)
+            summaries, len(shows), LOOKBACK_HOURS, feed_errors, deferred, throughline)
     else:
         html, text, subject = build_quiet_note(show_status, LOOKBACK_HOURS, feed_errors)
 
