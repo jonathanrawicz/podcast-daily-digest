@@ -917,6 +917,10 @@ def main():
 
     if DRY_RUN:
         print("DRY RUN — no email sent, nothing marked seen.")
+        print(f"\nSubject would be: {subject}\n")
+        print("----- DIGEST (text version) -----")
+        print(text)
+        print("----- END DIGEST -----")
         return
 
     send_email(html, text, subject)
