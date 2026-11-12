@@ -50,7 +50,7 @@ import requests
 
 
 # --- Required config ---
-GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
+GEMINI_API_KEY = os.environ["GEMINI_API_KEY"].strip()
 
 # gemini-2.5-flash supports audio input and has generous free-tier limits.
 # Don't use flash-lite here — its audio support has historically been spotty.
