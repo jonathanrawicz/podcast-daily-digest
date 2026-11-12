@@ -22,6 +22,16 @@ on:
         required: false
         default: false
         type: boolean
+      max_per_show:
+        description: "Per-show episode cap for this run (default 3; raise for catch-ups)"
+        required: false
+        default: ""
+        type: string
+      max_episodes:
+        description: "Global episode cap for this run (default 10; raise for catch-ups)"
+        required: false
+        default: ""
+        type: string
 
 permissions:
   contents: write
@@ -59,6 +69,8 @@ jobs:
           LOOKBACK_HOURS: ${{ inputs.lookback_hours || '48' }}
           LIMIT: ${{ inputs.limit }}
           DRY_RUN: ${{ inputs.dry_run }}
+          MAX_PER_SHOW: ${{ inputs.max_per_show }}
+          MAX_EPISODES: ${{ inputs.max_episodes }}
         run: python podcast_daily.py
 
       - name: Commit seen-episode state

@@ -64,8 +64,8 @@ LOOKBACK_HOURS = int(os.environ.get("LOOKBACK_HOURS") or "48")
 LIMIT = int(os.environ.get("LIMIT") or "0")             # 0 = no cap
 DRY_RUN = (os.environ.get("DRY_RUN") or "").strip().lower() in ("1", "true", "yes")
 
-MAX_PER_SHOW_PER_RUN = 3      # a show that dumps a backlog gets spread over days
-MAX_EPISODES_PER_RUN = 10     # global safety cap; the rest defer to tomorrow
+MAX_PER_SHOW_PER_RUN = int(os.environ.get("MAX_PER_SHOW") or "3")   # backlog spread over days
+MAX_EPISODES_PER_RUN = int(os.environ.get("MAX_EPISODES") or "10")  # global cap; rest defer
 MAX_AUDIO_MB = 400            # skip absurdly large files
 SEEN_RETENTION_DAYS = 120     # prune seen-state entries older than this
 
