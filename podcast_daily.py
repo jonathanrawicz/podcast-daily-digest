@@ -101,7 +101,7 @@ Then one blank line, then the body in this exact structure with these exact head
 4-7 bullets. Each starts with a bolded 2-5 word lead (e.g. "**The gap is closing:**"), then one specific claim carrying a number, name, date, comparison or mechanism. Lead with the most consequential. Where the speaker hedged, contradicted themselves or pulled back, say so — that is signal.
 
 ## Worth Quoting
-1-2 direct quotes (15-30 words each) that carry the speaker's actual voice or a surprising claim, in quotation marks. If nothing earns it, write exactly: Nothing notable enough to quote.
+1-2 direct quotes (15-30 words each), each as its own bullet, that carry the speaker's actual voice or a surprising claim, in quotation marks. If nothing earns it, write exactly: Nothing notable enough to quote.
 
 Critical rules:
 - DO NOT pad, soften, or balance for its own sake. Short and sharp beats complete.
