@@ -1,0 +1,8 @@
+source,name
+# One show per line. source = Apple Podcasts URL, numeric iTunes ID, or direct RSS URL.
+# name is optional — leave blank to use the feed's own title.
+https://podcasts.apple.com/gb/podcast/eye-on-the-market/id1367963156,Eye on the Market
+https://podcasts.apple.com/gb/podcast/another-podcast/id1535359773,Another Podcast
+https://podcasts.apple.com/gb/podcast/bg2pod-with-brad-gerstner-and-bill-gurley/id1727278168,BG2Pod
+https://podcasts.apple.com/gb/podcast/ai-a16z/id1740178076,AI + a16z
+https://podcasts.apple.com/gb/podcast/the-rachman-review/id1504048545,The Rachman Review

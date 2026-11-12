@@ -1,0 +1,89 @@
+name: Podcast daily digest
+
+on:
+  schedule:
+    # 05:47 UTC daily — lands ~05:47 UK in winter, ~06:47 in summer.
+    # Off the hour on purpose: GitHub delays on-the-hour crons the most.
+    - cron: "47 5 * * *"
+  workflow_dispatch:
+    inputs:
+      lookback_hours:
+        description: "Lookback window in hours (default 48)"
+        required: false
+        default: "48"
+        type: string
+      limit:
+        description: "Cap on episodes this run (set 1 for a smoke test; blank = no cap)"
+        required: false
+        default: ""
+        type: string
+      dry_run:
+        description: "Dry run: no email, nothing marked seen"
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+concurrency:
+  group: podcast-daily
+  cancel-in-progress: false
+
+jobs:
+  digest:
+    runs-on: ubuntu-latest
+    # ~3 min per episode; the global cap is 10 episodes, long ones run ~8 min.
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main   # always run against current main, not the queued SHA
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      - name: Run digest
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
+          EMAIL_TO: ${{ secrets.EMAIL_TO }}
+          LOOKBACK_HOURS: ${{ inputs.lookback_hours || '48' }}
+          LIMIT: ${{ inputs.limit }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: python podcast_daily.py
+
+      - name: Commit seen-episode state
+        if: ${{ success() && inputs.dry_run != true }}
+        run: |
+          git config user.name "podcast-daily-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add data/
+          if git diff --cached --quiet; then
+            echo "No state changes to commit."
+            exit 0
+          fi
+          git commit -m "Update seen episodes [skip ci]"
+          for i in 1 2 3; do
+            if git push; then exit 0; fi
+            echo "Push rejected; rebasing and retrying ($i/3)..."
+            git pull --rebase origin main
+          done
+          git push
+
+      - name: Upload digest HTML as artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: podcast-daily-digest
+          path: "output/*.html"
+          if-no-files-found: warn
+          retention-days: 14
